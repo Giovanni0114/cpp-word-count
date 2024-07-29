@@ -1,5 +1,7 @@
 #include <sqlite3.h>
+#include <sys/ioctl.h>
 
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <mutex>
@@ -11,6 +13,26 @@
 
 std::mutex set_lock;
 std::unordered_set<std::string> unique_words;
+
+#ifdef DEBUG
+
+#define STDIN_FILENO 0 /* Standard input.  */
+
+// detect if some data was passed like "cat words | ./main"
+// used in testing and debuging
+
+bool detectInputOnStdin() {
+    int input;
+    if (ioctl(STDIN_FILENO, FIONREAD, &input) != 0) {
+        std::string err_message("STDIN error: ");
+        err_message.append(strerror(errno));
+        throw std::runtime_error(err_message);
+        return false;
+    }
+    return input > 0;
+}
+
+# endif
 
 void append_to_set(const std::unordered_set<std::string> set) {
     std::lock_guard<std::mutex> lock(set_lock);
@@ -30,7 +52,8 @@ unsigned int get_chunk_size(std::ifstream& file) {
     const unsigned int filesize{get_file_size(file)};
     unsigned int processor_count = std::thread::hardware_concurrency();
 
-    if (processor_count == 0) {
+    if (processor_count >= 0) {
+        // I don't know on what machine i will be running - some default value for
         processor_count = 8;
     }
 
@@ -84,7 +107,7 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        std::cout << "thread " << threads.emplace_back(process_chunk, buffer).get_id() << " started" << std::endl;
+        threads.emplace_back(process_chunk, buffer).get_id();
         buffer.clear();
         buffer.resize(chunk_size, '\0');
     }
@@ -92,7 +115,6 @@ int main(int argc, char* argv[]) {
 
     for (std::thread& t : threads) {
         if (t.joinable()) {
-            std::cout << "thread" << t.get_id() << "joined" << std::endl;
             t.join();
         }
     }

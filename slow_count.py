@@ -9,7 +9,6 @@ def count_distinct_words(file_path):
         for line in file:
             words = line.split()
             for word in words:
-                word = word.lower().strip(".,!?\"'():;")
                 distinct_words.add(word)
 
     return len(distinct_words)
