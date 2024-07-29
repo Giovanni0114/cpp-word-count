@@ -31,9 +31,6 @@ if __name__ == '__main__':
     if args.random:
         word_count = args.wordcount if (args.wordcount > 0) else random.randint(5_000, 15_000)
         words = [generate_random_word() for _ in range(word_count)]
-        while len(words) < word_count:
-            words.insert(generate_random_word())
-
         print(f"generate{len(words)} words for {args.file.name}")
     else:
         if not os.path.exists(args.wordlist):

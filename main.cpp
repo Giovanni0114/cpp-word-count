@@ -1,44 +1,76 @@
 #include <sqlite3.h>
 #include <sys/ioctl.h>
+#include <sys/sysinfo.h>
 
+#include <algorithm>
 #include <cstring>
 #include <fstream>
 #include <iostream>
 #include <mutex>
+#include <random>
+#include <semaphore>
 #include <sstream>
 #include <string>
 #include <thread>
 #include <unordered_set>
 #include <vector>
 
+// if file is smaller than 100MB * max_threads -> chunk_size = filesize / max_threads
+// if there is not enough memory -> chunk_size = available_ram * 0.8
+// the chunk size should be about 100MB should be good enough for most cases
+#define CHUNK_SIZE (unsigned int)(1024 * 1024 * 100)  // 100 MB
+
 std::mutex set_lock;
+
 std::unordered_set<std::string> unique_words;
 
-#ifdef DEBUG
+std::random_device dev;
+std::mt19937 rng(dev());
 
-#define STDIN_FILENO 0 /* Standard input.  */
+std::vector<std::thread> threads;
 
-// detect if some data was passed like "cat words | ./main"
-// used in testing and debuging
+const unsigned int max_threads = std::thread::hardware_concurrency();
+std::counting_semaphore<> semaphore(max_threads);
 
-bool detectInputOnStdin() {
-    int input;
-    if (ioctl(STDIN_FILENO, FIONREAD, &input) != 0) {
-        std::string err_message("STDIN error: ");
-        err_message.append(strerror(errno));
-        throw std::runtime_error(err_message);
-        return false;
-    }
-    return input > 0;
+// prevent multiple threads ended in about same time
+//      -> this may reasult in throttling on writing to unordered_set
+int random_jitter(const unsigned int size) {
+    std::uniform_int_distribution<std::mt19937::result_type> dist(size * -0.2, size * 0.2);
+    return dist(rng);
 }
 
-# endif
+bool get_available_memory(unsigned int& size) {
+    struct sysinfo info;
+    if (sysinfo(&info) == 0) {
+        size = info.freeram;
+        return true;
+    }
+    return false;
+}
+
+unsigned int new_chunk_size(const unsigned int original_size) {
+    unsigned int new_chunk = original_size + random_jitter(original_size);
+    unsigned int freeram = 0;
+
+    if (get_available_memory(freeram)) {
+        return std::min<unsigned int>(freeram * 0.8, new_chunk);
+    }
+
+    return new_chunk;
+}
 
 void append_to_set(const std::unordered_set<std::string> set) {
     std::lock_guard<std::mutex> lock(set_lock);
     unique_words.insert(set.begin(), set.end());
+
+#ifdef DEBUG
+    std::cout << "appended: " << unique_words.size() << " for " << std::this_thread::get_id() << std::endl;
+#endif
+
+    semaphore.release();
 }
 
+// quick jump to end to tell how big the file is
 unsigned int get_file_size(std::ifstream& file) {
     std::streampos begin, end;
     begin = file.tellg();
@@ -48,21 +80,13 @@ unsigned int get_file_size(std::ifstream& file) {
     return end - begin;
 }
 
+// calculate if the file is not too small
+// this may allow use whole CPU even with smaller files
 unsigned int get_chunk_size(std::ifstream& file) {
     const unsigned int filesize{get_file_size(file)};
-    unsigned int processor_count = std::thread::hardware_concurrency();
 
-    if (processor_count >= 0) {
-        // I don't know on what machine i will be running - some default value for
-        processor_count = 8;
-    }
-
-    const unsigned int chunk_size = get_file_size(file) / processor_count;
-    const unsigned int prevent_additional_chunk = filesize - (chunk_size * processor_count);
-
-    // std::cout << "pc: " << processor_count << std::endl
-    //           << "fs: " << get_file_size(file) << std::endl
-    //           << "pac: " << prevent_additional_chunk << std::endl;
+    const unsigned int chunk_size = get_file_size(file) / max_threads;
+    const unsigned int prevent_additional_chunk = filesize - (chunk_size * max_threads);
 
     return chunk_size + prevent_additional_chunk;
 }
@@ -90,27 +114,36 @@ int main(int argc, char* argv[]) {
         throw std::runtime_error("Unable to open file");
     }
 
-    const unsigned int chunk_size{get_chunk_size(file)};
-    std::cout << "b size: " << chunk_size << std::endl;
+    const unsigned int original_chunk_size{std::min<unsigned int>(get_chunk_size(file), CHUNK_SIZE)};
 
-    std::vector<std::thread> threads;
+    unsigned int chunk_size{original_chunk_size};
     std::string buffer(chunk_size, '\0');
 
     while (file.read(buffer.data(), chunk_size) || file.gcount() > 0) {
-        buffer.resize(file.gcount());
+        buffer.resize(file.gcount());  //
 
-        // get closest whole word
-        if (file.gcount() == chunk_size) {
+        {
+            // get closest whole word
             char c;
             while (file.get(c) && c != ' ') {
                 buffer.push_back(c);
             }
         }
 
-        threads.emplace_back(process_chunk, buffer).get_id();
+        semaphore.acquire();
+
+#ifndef DEBUG
+        threads.emplace_back(process_chunk, buffer);
+#else
+        std::cout << "created " << threads.emplace_back(process_chunk, buffer).get_id() << " for " << chunk_size
+                  << " bytes" << std::endl;
+#endif
+
         buffer.clear();
+        chunk_size = new_chunk_size(original_chunk_size);
         buffer.resize(chunk_size, '\0');
     }
+
     file.close();
 
     for (std::thread& t : threads) {
