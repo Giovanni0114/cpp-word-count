@@ -32,6 +32,8 @@ std::vector<std::thread> threads;
 const unsigned int max_threads = std::thread::hardware_concurrency();
 std::counting_semaphore<> semaphore(max_threads);
 
+const long page_size{sysconf(_SC_PAGESIZE)};
+
 // prevent multiple threads ended in about same time
 //      -> this may reasult in throttling on writing to unordered_set
 int random_jitter(const unsigned int size) {
@@ -53,10 +55,10 @@ unsigned int new_chunk_size(const unsigned int original_size) {
     unsigned int freeram = 0;
 
     if (get_available_memory(freeram)) {
-        return std::min<unsigned int>(freeram * 0.8, new_chunk);
+        new_chunk = std::min<unsigned int>(freeram * 0.8, new_chunk);
     }
 
-    return new_chunk;
+    return new_chunk - (new_chunk % page_size);
 }
 
 void append_to_set(const std::unordered_set<std::string> set) {
@@ -115,12 +117,11 @@ int main(int argc, char* argv[]) {
     }
 
     const unsigned int original_chunk_size{std::min<unsigned int>(get_chunk_size(file), CHUNK_SIZE)};
-
     unsigned int chunk_size{original_chunk_size};
     std::string buffer(chunk_size, '\0');
 
     while (file.read(buffer.data(), chunk_size) || file.gcount() > 0) {
-        buffer.resize(file.gcount());  //
+        buffer.resize(file.gcount());
 
         {
             // get closest whole word
