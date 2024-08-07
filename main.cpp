@@ -3,6 +3,7 @@
 #include <sys/sysinfo.h>
 
 #include <algorithm>
+#include <cassert>
 #include <cstring>
 #include <fstream>
 #include <iostream>
@@ -74,11 +75,11 @@ void append_to_set(const std::unordered_set<std::string> set) {
 
 // quick jump to end to tell how big the file is
 unsigned int get_file_size(std::ifstream& file) {
-    std::streampos begin, end;
-    begin = file.tellg();
-    file.seekg(0, std::ifstream::end);
-    end = file.tellg();
+    auto begin = file.tellg();
+    auto end = file.seekg(0, std::ifstream::end).tellg();
+
     file.seekg(0, std::ifstream::beg);
+
     return end - begin;
 }
 
@@ -119,16 +120,32 @@ int main(int argc, char* argv[]) {
     const unsigned int original_chunk_size{std::min<unsigned int>(get_chunk_size(file), CHUNK_SIZE)};
     unsigned int chunk_size{original_chunk_size};
     std::string buffer(chunk_size, '\0');
+    std::string append_to_next_buffer;
 
     while (file.read(buffer.data(), chunk_size) || file.gcount() > 0) {
         buffer.resize(file.gcount());
 
-        {
-            // get closest whole word
-            char c;
-            while (file.get(c) && c != ' ') {
-                buffer.push_back(c);
-            }
+        if (!append_to_next_buffer.empty()){
+            buffer.insert(0, append_to_next_buffer);
+            append_to_next_buffer.clear();
+        }
+
+        while (buffer.back() != ' ') {
+            std::string lookup_space_buffer(page_size, '\0');
+            if (file.read(lookup_space_buffer.data(), page_size) || file.gcount() > 0) {
+                lookup_space_buffer.resize(file.gcount());
+
+                auto space_poz = lookup_space_buffer.find(' ');
+                if (space_poz != std::string::npos) {
+                    buffer.append(lookup_space_buffer.substr(0, space_poz));
+                    append_to_next_buffer = lookup_space_buffer.substr(space_poz + 1);
+                    break;
+                }
+
+                buffer.append(lookup_space_buffer);
+                continue;
+            };
+            break;
         }
 
         semaphore.acquire();
@@ -152,6 +169,10 @@ int main(int argc, char* argv[]) {
             t.join();
         }
     }
+    
+    assert(std::find_if(threads.begin(), threads.end(), [](std::thread& t)-> bool {
+        return t.joinable();
+    }) == threads.end());
 
     std::cout << unique_words.size() << std::endl;
 
