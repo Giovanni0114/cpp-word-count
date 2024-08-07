@@ -1,5 +1,5 @@
 CC = g++
-CXXFLAGS = -std=c++20 -pthread 
+CXXFLAGS = -std=c++20 -pthread -O3
 TARGET = main
 SOURCE = main.cpp
 
