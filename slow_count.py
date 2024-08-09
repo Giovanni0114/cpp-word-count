@@ -19,4 +19,4 @@ if __name__ == '__main__':
         print(f"Usage: {sys.argv[0]} <filename> ")
         sys.exit(1)
 
-    print(f'The number of distinct words in the file is: {count_distinct_words(sys.argv[1])}')
+    print(f'{sys.argv[1]}: {count_distinct_words(sys.argv[1])}')
