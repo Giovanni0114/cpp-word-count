@@ -10,11 +10,11 @@
 #include <mutex>
 #include <random>
 #include <semaphore>
-#include <sstream>
 #include <string>
 #include <thread>
 #include <unordered_set>
 #include <vector>
+#include <ranges>
 
 // if file is smaller than 100MB * max_threads -> chunk_size = filesize / max_threads
 // if there is not enough memory -> chunk_size = available_ram * 0.8
@@ -23,7 +23,7 @@
 
 std::mutex set_lock;
 
-std::unordered_set<std::string> unique_words;
+std::unordered_set<size_t> unique_words;
 
 std::random_device dev;
 std::mt19937 rng(dev());
@@ -34,6 +34,7 @@ const unsigned int max_threads = std::thread::hardware_concurrency();
 std::counting_semaphore<> semaphore(max_threads);
 
 const long page_size{sysconf(_SC_PAGESIZE)};
+
 
 // prevent multiple threads ended in about same time
 //      -> this may reasult in throttling on writing to unordered_set
@@ -62,7 +63,7 @@ unsigned int new_chunk_size(const unsigned int original_size) {
     return new_chunk - (new_chunk % page_size);
 }
 
-void append_to_set(const std::unordered_set<std::string> set) {
+void append_to_set(const std::unordered_set<size_t> set) {
     std::lock_guard<std::mutex> lock(set_lock);
     unique_words.insert(set.begin(), set.end());
 
@@ -91,17 +92,20 @@ unsigned int get_chunk_size(std::ifstream& file) {
     const unsigned int chunk_size = get_file_size(file) / max_threads;
     const unsigned int prevent_additional_chunk = filesize - (chunk_size * max_threads);
 
-    return chunk_size + prevent_additional_chunk;
+    return chunk_size + prevent_additional_chunk - ((chunk_size + prevent_additional_chunk) % page_size);
 }
 
 void process_chunk(const std::string& chunk) {
-    std::unordered_set<std::string> local_set;
-    std::istringstream stream(chunk);
-    std::string word;
+    std::unordered_set<size_t> local_set;
 
-    while (stream >> word) {
-        local_set.insert(word);
-    }
+    auto is_not_empty = [](auto&& word) { return word.begin() != word.end(); };
+    auto processed
+        = chunk | std::ranges::views::split(' ') | std::ranges::views::filter(is_not_empty)
+          | std::ranges::views::transform([](auto&& word) {
+                return std::hash<std::string_view>()(std::string_view(&*word.begin(), std::ranges::distance(word)));
+            });
+
+    local_set.insert(processed.begin(), processed.end());
 
     append_to_set(local_set);
 }
@@ -169,7 +173,7 @@ int main(int argc, char* argv[]) {
             t.join();
         }
     }
-    
+
     assert(std::find_if(threads.begin(), threads.end(), [](std::thread& t)-> bool {
         return t.joinable();
     }) == threads.end());
